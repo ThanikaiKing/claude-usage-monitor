@@ -10,6 +10,7 @@ import { modelLabel } from "@/lib/pricing";
 
 const NAV = [
   { href: "/", label: "Overview", icon: "M3 12h4l3-8 4 16 3-8h4" },
+  { href: "/streaks", label: "Streaks", icon: "M12 3c.5 3 3.5 4.5 4.5 7.8.8 3-.6 7-4.5 7.9-4.2.9-7.4-2.4-6.8-6 .4-2.2 1.8-3.3 2.4-5.1.5 1.4.5 2.5 1.6 3.2C9.6 8 10.9 5.4 12 3z" },
   { href: "/timeline", label: "Timeline", icon: "M4 19V9m5 10V5m5 14v-7m5 7V8" },
   { href: "/projects", label: "Projects", icon: "M3 7l2-3h5l2 3h9v12H3z" },
   { href: "/models", label: "Models", icon: "M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5" },

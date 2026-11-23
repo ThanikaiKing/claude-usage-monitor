@@ -84,7 +84,13 @@ export function OverviewView() {
           </div>
 
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <StatTile label="Current streak" value={`${streak.current} day${streak.current === 1 ? "" : "s"}`} sub={`longest ${streak.longest} days`} />
+            <Link href="/streaks" className="group block rounded-2xl outline-none focus-visible:ring-2 focus-visible:ring-accent">
+              <StatTile
+                label="Current streak"
+                value={`${streak.current} day${streak.current === 1 ? "" : "s"}`}
+                sub={<span className="group-hover:text-accent">longest {streak.longest} days · see streaks →</span>}
+              />
+            </Link>
             <StatTile label="Tool calls" value={fmtNum(t.toolCalls)} sub={`${fmtPct(t.toolCalls ? t.toolErrors / t.toolCalls : 0, 1)} returned errors`} />
             <StatTile label="Subagent runs" value={fmtNum(t.subagentRuns)} sub="Explore, Plan, web-fetch…" />
             <StatTile label="Cost per prompt" value={fmtUSD(t.prompts ? t.cost / t.prompts : 0)} sub={`${fmtNum(t.prompts ? totalTokens(t.usage) / t.prompts : 0)} tokens each`} />
