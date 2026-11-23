@@ -398,7 +398,10 @@ async function main() {
   if (REDACT) snapshot = redact(snapshot);
 
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
-  fs.writeFileSync(OUT, JSON.stringify(snapshot));
+  // Write-then-rename so a concurrent run (session hook + daily sync) never sees a half-written file.
+  const tmp = `${OUT}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(snapshot));
+  fs.renameSync(tmp, OUT);
 
   const calls = sessions.reduce((n, s) => n + s.buckets.reduce((m, b) => m + b.u.n, 0), 0);
   const kept = sessions.length - fresh.length;

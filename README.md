@@ -23,6 +23,23 @@ git add data/usage.json && git commit -m "Refresh usage snapshot"
 git push           # Vercel rebuilds on push
 ```
 
+## Keeping it up to date automatically
+
+Claude Code deletes transcripts 30 days after a session was last used (`cleanupPeriodDays`), so the snapshot must be refreshed at least that often. Two pieces handle it:
+
+| Piece | When | What it does |
+|---|---|---|
+| `scripts/hook-ingest.ps1` | Every Claude Code session end (async `SessionEnd` hook in `~/.claude/settings.json`) | Refreshes `data/usage.json` locally. No commit, no push. |
+| `scripts/daily-sync.ps1` | Daily at 10:00 via the **Claude Usage Monitor Sync** scheduled task. If the laptop was off or asleep, it runs as soon as it's back on and online. | Ingests, commits `data/usage.json` only if it changed, pushes, and Vercel redeploys. |
+
+Safety rules in the daily sync: it only runs on `main`, only ever commits `data/usage.json`, and won't push if any unpushed commit touches another file (push those yourself). Logs go to `logs/` (git-ignored).
+
+```powershell
+pwsh -File scripts/register-sync-task.ps1 -At 21:00          # change the time
+Start-ScheduledTask -TaskName 'Claude Usage Monitor Sync'      # run now
+Unregister-ScheduledTask -TaskName 'Claude Usage Monitor Sync' # remove
+```
+
 ## What gets read
 
 | Source | Used for |
