@@ -3,7 +3,7 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useData } from "./data-context";
 import { type RangeKey, allModels, allProjects } from "@/lib/aggregate";
 import { modelLabel } from "@/lib/pricing";
@@ -57,7 +57,11 @@ function ThemeToggle() {
 const selectCls =
   "h-9 min-w-0 rounded-lg border border-line bg-surface-1 px-2.5 text-[13px] text-ink outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent";
 
-function FilterBar() {
+function hasFilters(f: { range: RangeKey; project: string | null; model: string | null }) {
+  return Number(f.range !== "all") + Number(Boolean(f.project)) + Number(Boolean(f.model));
+}
+
+function FilterBar({ stacked = false }: { stacked?: boolean }) {
   const { snapshot, filters, setFilters } = useData();
   const ranges: { key: RangeKey; label: string }[] = [
     { key: "7d", label: "7D" },
@@ -66,8 +70,12 @@ function FilterBar() {
     { key: "all", label: "All" },
   ];
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <div className="flex rounded-lg border border-line bg-surface-1 p-0.5" role="group" aria-label="Date range">
+    <div className={clsx(stacked ? "grid grid-cols-2 gap-2" : "flex flex-wrap items-center gap-2")}>
+      <div
+        className={clsx("rounded-lg border border-line bg-surface-1 p-0.5", stacked ? "col-span-2 grid grid-cols-4" : "flex")}
+        role="group"
+        aria-label="Date range"
+      >
         {ranges.map((r) => (
           <button
             key={r.key}
@@ -75,7 +83,8 @@ function FilterBar() {
             aria-pressed={filters.range === r.key}
             onClick={() => setFilters({ range: r.key })}
             className={clsx(
-              "h-8 rounded-md px-2.5 text-[13px] transition-colors",
+              "rounded-md text-[13px] transition-colors",
+              stacked ? "h-9" : "h-8 px-2.5",
               filters.range === r.key ? "bg-accent-wash font-medium text-ink" : "text-muted hover:text-ink",
             )}
           >
@@ -85,7 +94,7 @@ function FilterBar() {
       </div>
       <select
         aria-label="Project"
-        className={selectCls}
+        className={clsx(selectCls, stacked && "w-full")}
         value={filters.project ?? ""}
         onChange={(e) => setFilters({ project: e.target.value || null })}
       >
@@ -96,7 +105,12 @@ function FilterBar() {
           </option>
         ))}
       </select>
-      <select aria-label="Model" className={selectCls} value={filters.model ?? ""} onChange={(e) => setFilters({ model: e.target.value || null })}>
+      <select
+        aria-label="Model"
+        className={clsx(selectCls, stacked && "w-full")}
+        value={filters.model ?? ""}
+        onChange={(e) => setFilters({ model: e.target.value || null })}
+      >
         <option value="">All models</option>
         {allModels(snapshot).map((m) => (
           <option key={m} value={m}>
@@ -104,16 +118,97 @@ function FilterBar() {
           </option>
         ))}
       </select>
-      {(filters.project || filters.model || filters.range !== "all") && (
+      {hasFilters(filters) > 0 && (
         <button
           type="button"
           onClick={() => setFilters({ range: "all", project: null, model: null })}
-          className="h-9 rounded-lg px-2 text-[13px] text-muted hover:text-ink"
+          className={clsx("h-9 rounded-lg px-2 text-[13px] text-muted hover:text-ink", stacked && "col-span-2 border border-line")}
         >
-          Reset
+          Reset filters
         </button>
       )}
     </div>
+  );
+}
+
+function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <Link href="/" className={clsx("flex items-center gap-2.5", !compact && "mb-8 px-2")}>
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-wash text-accent">
+        <Icon d="M12 3v3m0 12v3M3 12h3m12 0h3M6.3 6.3l2.1 2.1m7.2 7.2l2.1 2.1m0-11.4l-2.1 2.1m-7.2 7.2l-2.1 2.1" />
+      </span>
+      <span className="leading-tight">
+        <span className="block text-[14px] font-semibold text-ink">Usage Monitor</span>
+        <span className="block text-[11px] text-muted">Claude Code</span>
+      </span>
+    </Link>
+  );
+}
+
+/** Phone/tablet header: brand + actions, scrollable section tabs, collapsible filters. */
+function MobileHeader({ isActive }: { isActive: (href: string) => boolean }) {
+  const { filters } = useData();
+  const [open, setOpen] = useState(false);
+  const active = hasFilters(filters);
+  const tabsRef = useRef<HTMLElement>(null);
+  const pathname = usePathname();
+
+  // Keep the current section's tab in view.
+  useEffect(() => {
+    tabsRef.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [pathname]);
+
+  return (
+    <header className="sticky top-0 z-30 border-b border-line bg-plane/85 backdrop-blur-md lg:hidden">
+      <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-2">
+        <Brand compact />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            aria-controls="mobile-filters"
+            className={clsx(
+              "flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[13px] transition-colors",
+              open || active ? "border-accent/40 bg-accent-wash text-ink" : "border-line text-ink-2",
+            )}
+          >
+            <Icon d="M4 6h16M7 12h10M10 18h4" />
+            Filters
+            {active > 0 && (
+              <span className="grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent px-1 text-[11px] font-semibold text-white">
+                {active}
+              </span>
+            )}
+          </button>
+          <ThemeToggle />
+        </div>
+      </div>
+      {open && (
+        <div id="mobile-filters" className="border-t border-line px-4 py-3">
+          <FilterBar stacked />
+        </div>
+      )}
+      <nav
+        ref={tabsRef}
+        className="no-scrollbar flex gap-1 overflow-x-auto px-3 pb-2 [mask-image:linear-gradient(to_right,transparent,black_12px,black_calc(100%-24px),transparent)]"
+        aria-label="Sections"
+      >
+        {NAV.map((n) => (
+          <Link
+            key={n.href}
+            href={n.href}
+            aria-current={isActive(n.href) ? "page" : undefined}
+            className={clsx(
+              "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] transition-colors",
+              isActive(n.href) ? "bg-surface-2 text-ink" : "text-muted hover:text-ink",
+            )}
+          >
+            {n.label}
+          </Link>
+        ))}
+      </nav>
+    </header>
   );
 }
 
@@ -126,15 +221,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="mx-auto flex min-h-screen max-w-[1440px]">
       <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r border-line px-3 py-5 lg:flex">
-        <Link href="/" className="mb-8 flex items-center gap-2.5 px-2">
-          <span className="relative grid h-8 w-8 place-items-center rounded-lg bg-accent-wash text-accent">
-            <Icon d="M12 3v3m0 12v3M3 12h3m12 0h3M6.3 6.3l2.1 2.1m7.2 7.2l2.1 2.1m0-11.4l-2.1 2.1m-7.2 7.2l-2.1 2.1" />
-          </span>
-          <span className="leading-tight">
-            <span className="block text-[14px] font-semibold text-ink">Usage Monitor</span>
-            <span className="block text-[11px] text-muted">Claude Code</span>
-          </span>
-        </Link>
+        <Brand />
         <nav className="flex flex-col gap-0.5" aria-label="Sections">
           {NAV.map((n) => (
             <Link
@@ -162,28 +249,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 border-b border-line bg-plane/80 px-4 py-3 backdrop-blur-md sm:px-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <MobileHeader isActive={isActive} />
+        <header className="sticky top-0 z-30 hidden border-b border-line bg-plane/80 px-6 py-3 backdrop-blur-md lg:block">
+          <div className="flex items-center justify-between gap-3">
             <FilterBar />
             <ThemeToggle />
           </div>
-          <nav className="-mx-1 mt-3 flex gap-1 overflow-x-auto lg:hidden" aria-label="Sections">
-            {NAV.map((n) => (
-              <Link
-                key={n.href}
-                href={n.href}
-                aria-current={isActive(n.href) ? "page" : undefined}
-                className={clsx(
-                  "shrink-0 rounded-lg px-3 py-1.5 text-[13px]",
-                  isActive(n.href) ? "bg-surface-2 text-ink" : "text-muted",
-                )}
-              >
-                {n.label}
-              </Link>
-            ))}
-          </nav>
         </header>
-        <main className="flex-1 px-4 py-6 sm:px-6">{children}</main>
+        <main className="flex-1 px-4 pt-5 pb-6 sm:px-6 lg:py-6">{children}</main>
         <footer className="px-4 pb-6 text-[11px] text-muted sm:px-6">
           Costs are API-equivalent estimates at list prices; subscription plans bill differently.
         </footer>

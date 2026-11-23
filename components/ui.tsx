@@ -272,11 +272,17 @@ export function Sparkline({ values, height = 36 }: { values: number[]; height?: 
   const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(" ");
   const last = pts[pts.length - 1];
   return (
-    <svg viewBox={`0 0 ${w} ${height}`} preserveAspectRatio="none" className="h-9 w-full overflow-visible" aria-hidden>
-      <path d={`${d} L${w},${height} L0,${height} Z`} fill="var(--accent)" opacity={0.1} />
-      <path d={d} fill="none" stroke="var(--accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-      <circle cx={last[0]} cy={last[1]} r={3} fill="var(--accent)" stroke="var(--surface-1)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-    </svg>
+    <div className="relative h-9 w-full" aria-hidden>
+      <svg viewBox={`0 0 ${w} ${height}`} preserveAspectRatio="none" className="h-full w-full overflow-visible">
+        <path d={`${d} L${w},${height} L0,${height} Z`} fill="var(--accent)" opacity={0.1} />
+        <path d={d} fill="none" stroke="var(--accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+      </svg>
+      {/* End marker in HTML so the stretched SVG doesn't squash it into an oval. */}
+      <span
+        className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-surface-1"
+        style={{ left: "100%", top: `${(last[1] / height) * 100}%`, background: "var(--accent)" }}
+      />
+    </div>
   );
 }
 

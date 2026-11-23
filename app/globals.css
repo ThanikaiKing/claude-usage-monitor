@@ -135,6 +135,13 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Recharts chrome */
 .recharts-cartesian-grid line {
   stroke: var(--grid);

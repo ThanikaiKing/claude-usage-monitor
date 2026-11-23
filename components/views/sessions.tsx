@@ -68,7 +68,54 @@ export function SessionsView() {
         {rows.length === 0 ? (
           <Empty>No sessions match.</Empty>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* Phones: sort picker + cards instead of a sideways-scrolling table. */}
+          <div className="md:hidden">
+            <label className="mb-3 flex items-center gap-2 text-[13px] text-muted">
+              Sort by
+              <select
+                value={`${sort.key}:${sort.dir}`}
+                onChange={(e) => {
+                  const [key, dir] = e.target.value.split(":");
+                  setSort({ key: key as SortKey, dir: Number(dir) as 1 | -1 });
+                }}
+                className="h-9 flex-1 rounded-lg border border-line bg-surface-2 px-2.5 text-[13px] text-ink"
+              >
+                <option value="start:-1">Newest first</option>
+                <option value="start:1">Oldest first</option>
+                <option value="cost:-1">Highest cost</option>
+                <option value="tokens:-1">Most tokens</option>
+                <option value="active:-1">Longest hands-on</option>
+                <option value="prompts:-1">Most prompts</option>
+                <option value="tools:-1">Most tool calls</option>
+              </select>
+            </label>
+            <ul className="divide-y divide-line">
+              {rows.map(({ v, tokens, tools, topModel }) => (
+                <li key={v.session.id}>
+                  <Link href={`/sessions/${v.session.id}`} className="block py-3 active:bg-surface-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="min-w-0 text-[14px] leading-snug text-ink">
+                        {v.session.title ?? <span className="text-muted">Untitled · {v.session.id.slice(0, 8)}</span>}
+                      </span>
+                      <span className="tabular shrink-0 text-[14px] font-medium text-ink">{fmtUSD(v.cost)}</span>
+                    </div>
+                    <p className="mt-1 flex items-center gap-1.5 text-[12px] text-muted">
+                      {topModel && <Swatch color={modelColor(snapshot, topModel)} />}
+                      <span className="truncate">
+                        {v.session.project} · {fmtDateTime(v.session.start)}
+                      </span>
+                    </p>
+                    <p className="tabular mt-1 text-[12px] text-ink-2">
+                      {fmtDuration(v.session.activeMs)} · {v.session.prompts} prompt{v.session.prompts === 1 ? "" : "s"} · {tools} tool
+                      {tools === 1 ? "" : "s"} · {fmtNum(tokens)} tokens
+                    </p>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="hidden overflow-x-auto md:block">
             <table className="w-full min-w-[760px] text-[13px]">
               <thead className="text-muted">
                 <tr className="border-b border-line">
@@ -105,6 +152,7 @@ export function SessionsView() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Card>
     </>
