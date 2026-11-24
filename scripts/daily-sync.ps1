@@ -11,6 +11,26 @@ New-Item -ItemType Directory -Force $logDir | Out-Null
 $log = Join-Path $logDir 'sync.log'
 function Write-Log([string]$msg) { Add-Content $log "$(Get-Date -Format s) $msg" }
 
+# Runs a git command, retrying with exponential backoff (10s, 20s, 40s, 80s) so a run
+# that starts just after wake, before the network is up, still succeeds. Worst case
+# ~2.5 min of waiting per command, well inside the task's 10-minute limit.
+function Invoke-GitWithRetry([string]$name, [string[]]$gitArgs, [int]$attempts = 5, [int]$baseDelay = 10) {
+    for ($i = 1; $i -le $attempts; $i++) {
+        $out = git @gitArgs 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            if ($i -gt 1) { Write-Log "$name succeeded on attempt $i" }
+            return $true
+        }
+        if ($i -eq $attempts) {
+            Write-Log "$name failed after $attempts attempts: $($out.Trim())"
+            return $false
+        }
+        $delay = $baseDelay * [math]::Pow(2, $i - 1)
+        Write-Log "$name attempt $i failed, retrying in ${delay}s: $($out.Trim())"
+        Start-Sleep -Seconds $delay
+    }
+}
+
 Push-Location $repo
 try {
     $branch = (git rev-parse --abbrev-ref HEAD).Trim()
@@ -29,7 +49,7 @@ try {
         Write-Log 'no data changes'
     }
 
-    git fetch -q origin main 2>&1 | Out-Null
+    if (-not (Invoke-GitWithRetry 'fetch' @('fetch', '-q', 'origin', 'main'))) { exit 1 }
     $unpushed = @(git log origin/main..HEAD --format=%h)
     if ($unpushed.Count -eq 0) { Write-Log 'nothing to push'; exit 0 }
 
@@ -40,8 +60,7 @@ try {
         exit 0
     }
 
-    $pushOut = git push -q origin main 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { Write-Log "push failed: $($pushOut.Trim())"; exit 1 }
+    if (-not (Invoke-GitWithRetry 'push' @('push', '-q', 'origin', 'main'))) { exit 1 }
     Write-Log "pushed $($unpushed.Count) commit(s)"
 } catch {
     Write-Log "error: $($_.Exception.Message)"
