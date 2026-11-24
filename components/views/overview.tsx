@@ -24,7 +24,8 @@ import { fmtDay, fmtDuration, fmtNum, fmtPct, fmtUSD } from "@/lib/format";
 import { modelLabel } from "@/lib/pricing";
 import { totalTokens } from "@/lib/types";
 
-const RANGE_LABEL = { "7d": "last 7 days", "14d": "last 14 days", "30d": "last 30 days", all: "all recorded sessions" };
+const HOUR_MS = 3_600_000;
+const RANGE_LABEL ={ "7d": "last 7 days", "14d": "last 14 days", "30d": "last 30 days", all: "all recorded sessions" };
 
 export function OverviewView() {
   const { snapshot, filters, views } = useData();
@@ -43,6 +44,7 @@ export function OverviewView() {
     .map((m) => ({ key: m, label: modelLabel(m), color: modelColor(snapshot, m) }));
   const costRows = days.map((d) => ({ day: d.day, ...d.costByModel }));
   const busiest = days.reduce((a, d) => (d.cost > (a?.cost ?? -1) ? d : a), days[0]);
+  const longestDay = days.reduce((a, d) => (d.activeMs > (a?.activeMs ?? -1) ? d : a), days[0]);
   // Claude Code's own per-session meter also counts background calls that never reach the transcript.
   const metered = views.filter((v) => v.session.reportedCostUSD != null);
   const meteredEst = metered.reduce((a, v) => a + v.cost, 0);
@@ -127,6 +129,22 @@ export function OverviewView() {
               </Card>
             </div>
           </div>
+
+          <Card
+            title="Coding time per day"
+            subtitle={`Hands-on time by day · ${fmtDuration(t.activeMs / Math.max(t.activeDays, 1))} average per active day · longest ${longestDay ? `${fmtDay(longestDay.day)} (${fmtDuration(longestDay.activeMs)})` : "—"}`}
+            table={{
+              columns: ["Day", "Coding time", "Sessions"],
+              rows: days.map((d) => [fmtDay(d.day), fmtDuration(d.activeMs), d.sessions]),
+            }}
+          >
+            <StackedDaily
+              data={days.map((d) => ({ day: d.day, hours: d.activeMs / HOUR_MS }))}
+              series={[{ key: "hours", label: "Coding time", color: seriesSlot(3) }]}
+              format={(h) => fmtDuration(h * HOUR_MS)}
+              height={220}
+            />
+          </Card>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card

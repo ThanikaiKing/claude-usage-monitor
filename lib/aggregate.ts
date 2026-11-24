@@ -162,6 +162,30 @@ export interface DayRow {
   costByModel: Record<string, number>;
   tokensByModel: Record<string, number>;
   sessions: number;
+  /** Hands-on time attributed to this day (see activeByDay). */
+  activeMs: number;
+}
+
+const IDLE_GAP_MS = 30 * 60 * 1000;
+
+/**
+ * Splits a session's hands-on time across local days, in proportion to the
+ * sub-30-minute gaps between its main-chain API calls on each day. The parts
+ * always sum to `activeMs`, so daily figures reconcile with the totals.
+ */
+export function activeByDay(s: Session): Map<string, number> {
+  const per = new Map<string, number>();
+  let sum = 0;
+  for (let i = 1; i < s.turns.length; i++) {
+    const gap = s.turns[i][0] - s.turns[i - 1][0];
+    if (gap <= 0 || gap >= IDLE_GAP_MS) continue;
+    const k = dayKey(new Date(s.turns[i][0]));
+    per.set(k, (per.get(k) ?? 0) + gap);
+    sum += gap;
+  }
+  if (!sum) return new Map([[dayKey(new Date(s.start)), s.activeMs]]);
+  for (const [k, v] of per) per.set(k, (v / sum) * s.activeMs);
+  return per;
 }
 
 /** Daily rows over the filtered range, including empty days so gaps show. */
@@ -176,7 +200,7 @@ export function daily(snapshot: Snapshot, f: Filters): DayRow[] {
       if (f.model && b.model !== f.model) continue;
       let r = rows.get(day);
       if (!r) {
-        r = { day, usage: emptyUsage(), cost: 0, costByModel: {}, tokensByModel: {}, sessions: 0, ids: new Set() };
+        r = { day, usage: emptyUsage(), cost: 0, costByModel: {}, tokensByModel: {}, sessions: 0, activeMs: 0, ids: new Set() };
         rows.set(day, r);
       }
       addUsage(r.usage, b.u);
@@ -189,16 +213,25 @@ export function daily(snapshot: Snapshot, f: Filters): DayRow[] {
   }
   const keys = [...rows.keys()].sort();
   if (!keys.length) return [];
+  // Time isn't per-model, so a model filter keeps whole sessions that used that model.
+  // Sessions with no matching usage are skipped, as in applyFilters, so days sum to totals().
+  const active = new Map<string, number>();
+  for (const s of snapshot.sessions) {
+    if (f.project && s.project !== f.project) continue;
+    if (!s.buckets.some((b) => !f.model || b.model === f.model)) continue;
+    for (const [day, ms] of activeByDay(s)) active.set(day, (active.get(day) ?? 0) + ms);
+  }
   const start = parseDay(from ?? keys[0]);
   const end = parseDay(lastDay(snapshot));
   const out: DayRow[] = [];
   for (let d = start; d <= end; d = new Date(d.getTime() + DAY_MS)) {
     const k = dayKey(d);
     const r = rows.get(k);
+    const activeMs = active.get(k) ?? 0;
     out.push(
       r
-        ? { day: k, usage: r.usage, cost: r.cost, costByModel: r.costByModel, tokensByModel: r.tokensByModel, sessions: r.ids.size }
-        : { day: k, usage: emptyUsage(), cost: 0, costByModel: {}, tokensByModel: {}, sessions: 0 },
+        ? { day: k, usage: r.usage, cost: r.cost, costByModel: r.costByModel, tokensByModel: r.tokensByModel, sessions: r.ids.size, activeMs }
+        : { day: k, usage: emptyUsage(), cost: 0, costByModel: {}, tokensByModel: {}, sessions: 0, activeMs },
     );
   }
   return out;
