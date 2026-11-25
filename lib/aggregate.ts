@@ -1,5 +1,5 @@
 import { costOf, legacyCost, modelLabel } from "./pricing";
-import { type Session, type Snapshot, type Usage, addUsage, emptyUsage, inputSide, totalTokens } from "./types";
+import { type ActiveSpan, type Session, type Snapshot, type Usage, addUsage, emptyUsage, inputSide, totalTokens } from "./types";
 
 export type RangeKey = "7d" | "14d" | "30d" | "all";
 
@@ -141,7 +141,6 @@ export function totals(views: View[]): Totals {
       t.cacheSavings += c.cacheSavings;
     }
     t.prompts += v.session.prompts;
-    t.activeMs += v.session.activeMs;
     for (const ts of Object.values(v.session.tools)) {
       t.toolCalls += ts.calls;
       t.toolErrors += ts.errors;
@@ -152,6 +151,7 @@ export function totals(views: View[]): Totals {
   const side = inputSide(usage);
   t.cacheHitRate = side ? usage.cr / side : 0;
   t.activeDays = days.size;
+  t.activeMs = sumValues(activeByDay(views.map((v) => v.session)));
   return t;
 }
 
@@ -162,31 +162,41 @@ export interface DayRow {
   costByModel: Record<string, number>;
   tokensByModel: Record<string, number>;
   sessions: number;
-  /** Hands-on time attributed to this day (see activeByDay). */
+  /** Hands-on time on this day, parallel sessions counted once (see activeByDay). */
   activeMs: number;
 }
 
-const IDLE_GAP_MS = 30 * 60 * 1000;
+/** A session's active spans; older snapshots without them fall back to one span from its start. */
+function spansOf(s: Session): ActiveSpan[] {
+  if (s.active) return s.active;
+  return s.activeMs ? [[dayKey(new Date(s.start)), s.start, s.start + s.activeMs]] : [];
+}
 
 /**
- * Splits a session's hands-on time across local days, in proportion to the
- * sub-30-minute gaps between its main-chain API calls on each day. The parts
- * always sum to `activeMs`, so daily figures reconcile with the totals.
+ * Hands-on time per local day across a set of sessions, as the union of their
+ * active spans, so time spent with several sessions open counts once.
  */
-export function activeByDay(s: Session): Map<string, number> {
-  const per = new Map<string, number>();
-  let sum = 0;
-  for (let i = 1; i < s.turns.length; i++) {
-    const gap = s.turns[i][0] - s.turns[i - 1][0];
-    if (gap <= 0 || gap >= IDLE_GAP_MS) continue;
-    const k = dayKey(new Date(s.turns[i][0]));
-    per.set(k, (per.get(k) ?? 0) + gap);
-    sum += gap;
+export function activeByDay(sessions: Session[]): Map<string, number> {
+  const byDay = new Map<string, [number, number][]>();
+  for (const s of sessions)
+    for (const [day, a, b] of spansOf(s)) (byDay.get(day) ?? byDay.set(day, []).get(day)!).push([a, b]);
+  const out = new Map<string, number>();
+  for (const [day, spans] of byDay) {
+    spans.sort((x, y) => x[0] - y[0]);
+    let ms = 0;
+    let [a, b] = spans[0];
+    for (const [c, d] of spans.slice(1)) {
+      if (c > b) {
+        ms += b - a;
+        [a, b] = [c, d];
+      } else b = Math.max(b, d);
+    }
+    out.set(day, ms + b - a);
   }
-  if (!sum) return new Map([[dayKey(new Date(s.start)), s.activeMs]]);
-  for (const [k, v] of per) per.set(k, (v / sum) * s.activeMs);
-  return per;
+  return out;
 }
+
+const sumValues = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0);
 
 /** Daily rows over the filtered range, including empty days so gaps show. */
 export function daily(snapshot: Snapshot, f: Filters): DayRow[] {
@@ -215,12 +225,11 @@ export function daily(snapshot: Snapshot, f: Filters): DayRow[] {
   if (!keys.length) return [];
   // Time isn't per-model, so a model filter keeps whole sessions that used that model.
   // Sessions with no matching usage are skipped, as in applyFilters, so days sum to totals().
-  const active = new Map<string, number>();
-  for (const s of snapshot.sessions) {
-    if (f.project && s.project !== f.project) continue;
-    if (!s.buckets.some((b) => !f.model || b.model === f.model)) continue;
-    for (const [day, ms] of activeByDay(s)) active.set(day, (active.get(day) ?? 0) + ms);
-  }
+  const active = activeByDay(
+    snapshot.sessions.filter(
+      (s) => (!f.project || s.project === f.project) && s.buckets.some((b) => !f.model || b.model === f.model),
+    ),
+  );
   const start = parseDay(from ?? keys[0]);
   const end = parseDay(lastDay(snapshot));
   const out: DayRow[] = [];
@@ -292,9 +301,10 @@ export function byProject(views: View[]): ProjectRow[] {
     addUsage(r.usage, v.usage);
     r.sessions += 1;
     r.prompts += v.session.prompts;
-    r.activeMs += v.session.activeMs;
     r.lastActive = Math.max(r.lastActive, v.session.end);
   }
+  for (const r of rows.values())
+    r.activeMs = sumValues(activeByDay(views.filter((v) => v.session.project === r.project).map((v) => v.session)));
   return [...rows.values()].sort((a, b) => b.cost - a.cost);
 }
 

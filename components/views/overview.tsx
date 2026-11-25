@@ -81,7 +81,7 @@ export function OverviewView() {
               <StatTile label="Tokens processed" value={fmtNum(totalTokens(t.usage))} sub={`${fmtNum(t.usage.out)} output · ${fmtNum(t.usage.think)} thinking`} />
               <StatTile label="Cache hit rate" value={fmtPct(t.cacheHitRate, 1)} sub={`saved ≈ ${fmtUSD(t.cacheSavings)} vs. uncached`} />
               <StatTile label="Sessions" value={fmtNum(t.sessions)} sub={`${fmtNum(t.prompts)} prompts · ${fmtNum(t.usage.n)} API calls`} />
-              <StatTile label="Hands-on time" value={fmtDuration(t.activeMs)} sub={`${t.activeDays} active days · idle gaps >30m excluded`} />
+              <StatTile label="Hands-on time" value={fmtDuration(t.activeMs)} sub={`${t.activeDays} active days · pauses capped at 45m · parallel sessions counted once`} />
             </div>
           </div>
 

@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import {
+  type ActiveSpan,
   type Bucket,
   type LegacyDay,
   type Session,
@@ -33,7 +34,8 @@ const argValue = (flag: string) => {
 const CLAUDE_DIR = argValue("--claude-dir") ?? path.join(os.homedir(), ".claude");
 const REDACT = args.includes("--redact");
 const OUT = path.resolve(__dirname, "..", "data", "usage.json");
-const IDLE_GAP_MS = 30 * 60 * 1000;
+/** A pause between events counts toward hands-on time up to this long. */
+const GAP_CAP_MS = 45 * 60 * 1000;
 const MAX_TURNS = 400;
 const HOME = os.homedir().toLowerCase();
 
@@ -244,10 +246,30 @@ function finalize(d: Draft): Session | null {
   if (d.buckets.size === 0 && d.prompts === 0) return null;
   const events = d.events.sort((a, b) => a - b);
   if (events.length === 0) return null;
-  let activeMs = 0;
+  // Each gap between events counts up to GAP_CAP_MS. Spans are merged, then split at
+  // local midnight and tagged with their local day, so callers can take the union
+  // across sessions (parallel sessions count once) without knowing the timezone.
+  const spans: [number, number][] = [];
   for (let i = 1; i < events.length; i++) {
-    const gap = events[i] - events[i - 1];
-    if (gap < IDLE_GAP_MS) activeMs += gap;
+    const a = events[i - 1];
+    const b = a + Math.min(events[i] - a, GAP_CAP_MS);
+    if (b <= a) continue;
+    const last = spans[spans.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else spans.push([a, b]);
+  }
+  const active: ActiveSpan[] = [];
+  let activeMs = 0;
+  for (const [start, b] of spans) {
+    activeMs += b - start;
+    let a = start;
+    while (a < b) {
+      const d = new Date(a);
+      const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+      const end = Math.min(b, midnight);
+      active.push([localDay(d), a, end]);
+      a = end;
+    }
   }
   const turns = d.turns.sort((a, b) => a.t - b.t);
   const step = Math.max(1, Math.ceil(turns.length / MAX_TURNS));
@@ -268,6 +290,7 @@ function finalize(d: Draft): Session | null {
     start: events[0],
     end: events[events.length - 1],
     activeMs,
+    active,
     entrypoint: d.entrypoint || "unknown",
     version: d.version,
     gitBranch: d.gitBranch,

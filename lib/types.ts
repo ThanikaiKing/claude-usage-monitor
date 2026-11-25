@@ -27,6 +27,8 @@ export interface Bucket {
 
 /** One main-chain API call: [epochMs, contextTokens, outputTokens, modelIndex]. */
 export type Turn = [number, number, number, number];
+/** [local day "YYYY-MM-DD", start ms, end ms] */
+export type ActiveSpan = [string, number, number];
 
 export interface ToolStat {
   calls: number;
@@ -40,8 +42,10 @@ export interface Session {
   title: string | null;
   start: number;
   end: number;
-  /** Sum of gaps between events that are shorter than 30 minutes. */
+  /** Hands-on time: sum of gaps between events, each capped at 45 minutes. */
   activeMs: number;
+  /** The spans behind activeMs, split at local midnight. Missing on snapshots from before it existed. */
+  active?: ActiveSpan[];
   entrypoint: string;
   version: string;
   gitBranch: string | null;
