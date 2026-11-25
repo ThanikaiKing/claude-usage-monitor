@@ -4,12 +4,20 @@
 #   - only ever commits data/usage.json (other local edits are left untouched)
 #   - only pushes when every unpushed commit is a snapshot-only commit
 #   - only runs on the main branch
+# The task also fires whenever a network connects (e.g. after wake), so a run that
+# already succeeded today makes later runs that day a no-op. Pass -Force to sync anyway.
+param([switch]$Force)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 $logDir = Join-Path $repo 'logs'
 New-Item -ItemType Directory -Force $logDir | Out-Null
 $log = Join-Path $logDir 'sync.log'
+$stamp = Join-Path $logDir 'last-sync.txt'
 function Write-Log([string]$msg) { Add-Content $log "$(Get-Date -Format s) $msg" }
+function Set-Synced { Set-Content $stamp (Get-Date -Format yyyy-MM-dd) }
+
+$today = Get-Date -Format yyyy-MM-dd
+if (-not $Force -and (Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $today)) { exit 0 }
 
 # Runs a git command, retrying with exponential backoff (10s, 20s, 40s, 80s) so a run
 # that starts just after wake, before the network is up, still succeeds. Worst case
@@ -51,7 +59,7 @@ try {
 
     if (-not (Invoke-GitWithRetry 'fetch' @('fetch', '-q', 'origin', 'main'))) { exit 1 }
     $unpushed = @(git log origin/main..HEAD --format=%h)
-    if ($unpushed.Count -eq 0) { Write-Log 'nothing to push'; exit 0 }
+    if ($unpushed.Count -eq 0) { Write-Log 'nothing to push'; Set-Synced; exit 0 }
 
     $files = @(git diff --name-only origin/main HEAD) | Where-Object { $_ }
     $other = @($files | Where-Object { $_ -ne 'data/usage.json' })
@@ -62,6 +70,7 @@ try {
 
     if (-not (Invoke-GitWithRetry 'push' @('push', '-q', 'origin', 'main'))) { exit 1 }
     Write-Log "pushed $($unpushed.Count) commit(s)"
+    Set-Synced
 } catch {
     Write-Log "error: $($_.Exception.Message)"
     exit 1

@@ -13,7 +13,15 @@ $pwsh = (Get-Command pwsh).Source
 $action = New-ScheduledTaskAction -Execute $pwsh `
     -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`"" `
     -WorkingDirectory (Split-Path $PSScriptRoot -Parent)
-$trigger = New-ScheduledTaskTrigger -Daily -At $At
+$daily = New-ScheduledTaskTrigger -Daily -At $At
+# Also run whenever a network connects (NetworkProfile event 10000), which covers
+# waking from sleep. daily-sync.ps1 skips itself once it has synced that day.
+$eventClass = Get-CimClass -Namespace ROOT\Microsoft\Windows\TaskScheduler -ClassName MSFT_TaskEventTrigger
+$onNetwork = New-CimInstance -CimClass $eventClass -ClientOnly
+$onNetwork.Enabled = $true
+$onNetwork.Subscription = '<QueryList><Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"><Select Path="Microsoft-Windows-NetworkProfile/Operational">*[System[EventID=10000]]</Select></Query></QueryList>'
+$onNetwork.Delay = 'PT1M'   # give DNS a moment to settle
+$trigger = @($daily, $onNetwork)
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
