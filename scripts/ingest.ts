@@ -8,7 +8,11 @@
  * The merge is cumulative: sessions found in the transcripts replace their stored copy, and
  * sessions that Claude Code has since pruned are kept, so history outlives transcript cleanup.
  * Prompt text from history.jsonl is never written to the snapshot.
+ *
+ * stats-cache.json and history.jsonl are per machine, so their aggregates are stored per machine
+ * (keyed by a hash of the hostname) and summed. Each run only replaces its own machine's entry.
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +21,9 @@ import {
   type ActiveSpan,
   type Bucket,
   type LegacyDay,
+  type LegacyStats,
+  type MachineStats,
+  type PromptStats,
   type Session,
   type Snapshot,
   type ToolStat,
@@ -38,6 +45,8 @@ const OUT = path.resolve(__dirname, "..", "data", "usage.json");
 const GAP_CAP_MS = 45 * 60 * 1000;
 const MAX_TURNS = 400;
 const HOME = os.homedir().toLowerCase();
+/** Stable, non-identifying id for this machine. */
+const MACHINE_ID = crypto.createHash("sha256").update(os.hostname()).digest("hex").slice(0, 12);
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const localDay = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -305,8 +314,8 @@ function finalize(d: Draft): Session | null {
   };
 }
 
-function readLegacy(): Snapshot["legacy"] {
-  const empty: Snapshot["legacy"] = {
+function readLegacy(): LegacyStats {
+  const empty: LegacyStats = {
     from: null,
     to: null,
     days: [],
@@ -327,7 +336,7 @@ function readLegacy(): Snapshot["legacy"] {
     toolCalls: (a.toolCallCount as number) ?? 0,
     tokensByModel: tokens.get(a.date as string) ?? {},
   }));
-  const modelTotals: Snapshot["legacy"]["modelTotals"] = {};
+  const modelTotals: LegacyStats["modelTotals"] = {};
   for (const [model, m] of Object.entries<Record<string, number>>(s.modelUsage ?? {})) {
     modelTotals[model] = {
       in: m.inputTokens ?? 0,
@@ -347,7 +356,7 @@ function readLegacy(): Snapshot["legacy"] {
   };
 }
 
-async function readPrompts(): Promise<Snapshot["prompts"]> {
+async function readPrompts(): Promise<PromptStats> {
   const byDay: Record<string, Record<string, number>> = {};
   const weekHour = Array.from({ length: 7 }, () => Array(24).fill(0));
   const file = path.join(CLAUDE_DIR, "history.jsonl");
@@ -365,6 +374,72 @@ async function readPrompts(): Promise<Snapshot["prompts"]> {
   return { from: days[0] ?? null, to: days[days.length - 1] ?? null, byDay, weekHour };
 }
 
+const add = (to: Record<string, number>, from: Record<string, number>) => {
+  for (const [k, v] of Object.entries(from)) to[k] = (to[k] ?? 0) + v;
+};
+
+function combineLegacy(all: LegacyStats[]): LegacyStats {
+  const days = new Map<string, LegacyDay>();
+  const out: LegacyStats = { from: null, to: null, days: [], modelTotals: {}, hourCounts: {}, totalSessions: 0, totalMessages: 0 };
+  for (const l of all) {
+    for (const d of l.days) {
+      const r = days.get(d.date) ?? { date: d.date, messages: 0, sessions: 0, toolCalls: 0, tokensByModel: {} };
+      r.messages += d.messages;
+      r.sessions += d.sessions;
+      r.toolCalls += d.toolCalls;
+      add(r.tokensByModel, d.tokensByModel);
+      days.set(d.date, r);
+    }
+    for (const [model, t] of Object.entries(l.modelTotals)) {
+      const r = (out.modelTotals[model] ??= { in: 0, out: 0, cr: 0, cw: 0 });
+      r.in += t.in;
+      r.out += t.out;
+      r.cr += t.cr;
+      r.cw += t.cw;
+    }
+    add(out.hourCounts, l.hourCounts);
+    out.totalSessions += l.totalSessions;
+    out.totalMessages += l.totalMessages;
+  }
+  out.days = [...days.values()].sort((a, b) => a.date.localeCompare(b.date));
+  out.from = out.days[0]?.date ?? null;
+  out.to = out.days[out.days.length - 1]?.date ?? null;
+  return out;
+}
+
+function combinePrompts(all: PromptStats[]): PromptStats {
+  const byDay: PromptStats["byDay"] = {};
+  const weekHour = Array.from({ length: 7 }, () => Array(24).fill(0));
+  for (const p of all) {
+    for (const [day, projects] of Object.entries(p.byDay)) add((byDay[day] ??= {}), projects);
+    p.weekHour.forEach((row, d) => row.forEach((v, h) => (weekHour[d][h] += v)));
+  }
+  const days = Object.keys(byDay).sort();
+  return { from: days[0] ?? null, to: days[days.length - 1] ?? null, byDay, weekHour };
+}
+
+/**
+ * Other machines' entries from the previous snapshot. A snapshot from before per-machine
+ * tracking has its top-level stats carried over as an "imported" entry, which the next run on
+ * the same platform (the machine that most likely wrote it) replaces with its own.
+ */
+function otherMachines(previous: Partial<Snapshot> | null): Record<string, MachineStats> {
+  if (!previous) return {};
+  let machines = previous.machines;
+  if (!machines && previous.legacy && previous.prompts) {
+    // Snapshots before per-machine tracking were only ever written on Windows.
+    machines = {
+      imported: { platform: "win32", generatedAt: previous.generatedAt ?? "", imported: true, legacy: previous.legacy, prompts: previous.prompts },
+    };
+  }
+  const out: Record<string, MachineStats> = {};
+  for (const [id, m] of Object.entries(machines ?? {})) {
+    if (id === MACHINE_ID || (m.imported && m.platform === process.platform)) continue;
+    out[id] = m;
+  }
+  return out;
+}
+
 function redact(snapshot: Snapshot): Snapshot {
   const alias = new Map<string, string>();
   const nameFor = (p: string) => {
@@ -377,12 +452,15 @@ function redact(snapshot: Snapshot): Snapshot {
     s.title = null;
     s.gitBranch = null;
   }
-  for (const day of Object.values(snapshot.prompts.byDay)) {
-    for (const p of Object.keys(day)) {
-      const v = day[p];
-      delete day[p];
-      const a = nameFor(p);
-      day[a] = (day[a] ?? 0) + v;
+  const allPrompts = [snapshot.prompts, ...Object.values(snapshot.machines ?? {}).map((m) => m.prompts)];
+  for (const prompts of allPrompts) {
+    for (const day of Object.values(prompts.byDay)) {
+      for (const p of Object.keys(day)) {
+        const v = day[p];
+        delete day[p];
+        const a = nameFor(p);
+        day[a] = (day[a] ?? 0) + v;
+      }
     }
   }
   snapshot.redacted = true;
@@ -397,25 +475,32 @@ async function main() {
 
   const fresh = [...drafts.values()].map(finalize).filter((s): s is Session => s !== null);
 
-  let previous: Session[] = [];
+  let prevSnapshot: Partial<Snapshot> | null = null;
   if (fs.existsSync(OUT)) {
     try {
-      previous = (JSON.parse(fs.readFileSync(OUT, "utf8")) as Snapshot).sessions ?? [];
+      prevSnapshot = JSON.parse(fs.readFileSync(OUT, "utf8")) as Partial<Snapshot>;
     } catch {
       console.warn("Existing snapshot unreadable; starting fresh.");
     }
   }
+  const previous = prevSnapshot?.sessions ?? [];
   const merged = new Map(previous.map((s) => [s.id, s]));
   for (const s of fresh) merged.set(s.id, s);
   const sessions = [...merged.values()].sort((a, b) => a.start - b.start);
 
+  const generatedAt = new Date().toISOString();
+  const machines: Record<string, MachineStats> = {
+    ...otherMachines(prevSnapshot),
+    [MACHINE_ID]: { platform: process.platform, generatedAt, legacy: readLegacy(), prompts: await readPrompts() },
+  };
   let snapshot: Snapshot = {
     version: 1,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     sessions,
-    legacy: readLegacy(),
-    prompts: await readPrompts(),
+    legacy: combineLegacy(Object.values(machines).map((m) => m.legacy)),
+    prompts: combinePrompts(Object.values(machines).map((m) => m.prompts)),
+    machines,
     redacted: false,
   };
   if (REDACT) snapshot = redact(snapshot);
@@ -430,7 +515,7 @@ async function main() {
   const kept = sessions.length - fresh.length;
   console.log(
     `Wrote ${path.relative(process.cwd(), OUT)}: ${sessions.length} sessions (${fresh.length} from transcripts, ${kept} retained), ` +
-      `${calls} API responses, ${(fs.statSync(OUT).size / 1024).toFixed(0)} KB${REDACT ? ", redacted" : ""}.`,
+      `${calls} API responses, ${Object.keys(machines).length} machine(s), ${(fs.statSync(OUT).size / 1024).toFixed(0)} KB${REDACT ? ", redacted" : ""}.`,
   );
 }
 

@@ -76,30 +76,52 @@ export interface LegacyModelTotals {
   cw: number;
 }
 
+export interface LegacyStats {
+  from: string | null;
+  to: string | null;
+  days: LegacyDay[];
+  modelTotals: Record<string, LegacyModelTotals>;
+  hourCounts: Record<string, number>;
+  totalSessions: number;
+  totalMessages: number;
+}
+
+export interface PromptStats {
+  from: string | null;
+  to: string | null;
+  /** date -> project -> count */
+  byDay: Record<string, Record<string, number>>;
+  /** [weekday 0=Sun..6][hour 0..23] */
+  weekHour: number[][];
+}
+
+export interface MachineStats {
+  /** process.platform of the machine that wrote this entry. */
+  platform: string;
+  generatedAt: string;
+  /**
+   * Set on data carried over from a snapshot written before per-machine tracking. The next
+   * ingest on a machine of the same platform replaces it with that machine's own entry.
+   */
+  imported?: boolean;
+  legacy: LegacyStats;
+  prompts: PromptStats;
+}
+
 export interface Snapshot {
   version: 1;
   generatedAt: string;
   timeZone: string;
   sessions: Session[];
-  /** Pre-transcript aggregates from stats-cache.json. */
-  legacy: {
-    from: string | null;
-    to: string | null;
-    days: LegacyDay[];
-    modelTotals: Record<string, LegacyModelTotals>;
-    hourCounts: Record<string, number>;
-    totalSessions: number;
-    totalMessages: number;
-  };
-  /** Prompt counts from history.jsonl (text is never exported). */
-  prompts: {
-    from: string | null;
-    to: string | null;
-    /** date -> project -> count */
-    byDay: Record<string, Record<string, number>>;
-    /** [weekday 0=Sun..6][hour 0..23] */
-    weekHour: number[][];
-  };
+  /** Pre-transcript aggregates from stats-cache.json, summed across machines. */
+  legacy: LegacyStats;
+  /** Prompt counts from history.jsonl (text is never exported), summed across machines. */
+  prompts: PromptStats;
+  /**
+   * Per-machine copies of `legacy` and `prompts`, keyed by a hash of the hostname. Each machine
+   * only rewrites its own entry, so several machines can sync into one snapshot.
+   */
+  machines?: Record<string, MachineStats>;
   redacted: boolean;
 }
 

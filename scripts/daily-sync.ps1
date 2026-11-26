@@ -44,33 +44,55 @@ try {
     $branch = (git rev-parse --abbrev-ref HEAD).Trim()
     if ($branch -ne 'main') { Write-Log "skip: on branch '$branch', not main"; exit 0 }
 
-    $out = & node (Join-Path $repo 'node_modules/tsx/dist/cli.mjs') 'scripts/ingest.ts' 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { Write-Log "ingest failed: $($out.Trim())"; exit 1 }
-    Write-Log "ingest: $($out.Trim())"
+    # Several machines push to this repo, so each cycle first moves onto origin/main and ingests
+    # on top of it (ingest merges, so other machines' data is kept). If another machine pushed
+    # in between, the push is rejected and the cycle is retried.
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if (-not (Invoke-GitWithRetry 'fetch' @('fetch', '-q', 'origin', 'main'))) { exit 1 }
 
-    git diff --quiet -- data/usage.json
-    if ($LASTEXITCODE -ne 0) {
-        git commit -q -m "Refresh usage snapshot $(Get-Date -Format yyyy-MM-dd)" -- data/usage.json
-        if ($LASTEXITCODE -ne 0) { Write-Log 'commit failed'; exit 1 }
-        Write-Log "committed $((git rev-parse --short HEAD).Trim())"
-    } else {
-        Write-Log 'no data changes'
-    }
+        git merge-base --is-ancestor origin/main HEAD; $behindOrDiverged = $LASTEXITCODE -ne 0
+        git merge-base --is-ancestor HEAD origin/main; $aheadOrDiverged = $LASTEXITCODE -ne 0
+        if ($behindOrDiverged -or $aheadOrDiverged) {
+            $unpushed = @(git log origin/main..HEAD --format=%h)
+            $other = @(@(git diff --name-only origin/main HEAD) | Where-Object { $_ -and $_ -ne 'data/usage.json' })
+            if ($unpushed.Count -gt 0 -and $other.Count -gt 0) {
+                Write-Log "skip: unpushed commits also change $($other -join ', '). Push manually."
+                exit 0
+            }
+            # Local snapshot changes are dropped: ingest rebuilds them on top of the latest snapshot.
+            git checkout -q -- data/usage.json
+            $out = git reset -q --keep origin/main 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Write-Log "skip: could not move to origin/main: $($out.Trim())"; exit 1 }
+        }
 
-    if (-not (Invoke-GitWithRetry 'fetch' @('fetch', '-q', 'origin', 'main'))) { exit 1 }
-    $unpushed = @(git log origin/main..HEAD --format=%h)
-    if ($unpushed.Count -eq 0) { Write-Log 'nothing to push'; Set-Synced; exit 0 }
+        $out = & node (Join-Path $repo 'node_modules/tsx/dist/cli.mjs') 'scripts/ingest.ts' 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Write-Log "ingest failed: $($out.Trim())"; exit 1 }
+        Write-Log "ingest: $($out.Trim())"
 
-    $files = @(git diff --name-only origin/main HEAD) | Where-Object { $_ }
-    $other = @($files | Where-Object { $_ -ne 'data/usage.json' })
-    if ($other.Count -gt 0) {
-        Write-Log "skip push: unpushed commits also change $($other -join ', '). Push manually."
+        git diff --quiet -- data/usage.json
+        if ($LASTEXITCODE -ne 0) {
+            git commit -q -m "Refresh usage snapshot $(Get-Date -Format yyyy-MM-dd)" -- data/usage.json
+            if ($LASTEXITCODE -ne 0) { Write-Log 'commit failed'; exit 1 }
+            Write-Log "committed $((git rev-parse --short HEAD).Trim())"
+        } else {
+            Write-Log 'no data changes'
+        }
+
+        $unpushed = @(git log origin/main..HEAD --format=%h)
+        if ($unpushed.Count -eq 0) { Write-Log 'nothing to push'; Set-Synced; exit 0 }
+
+        $out = git push -q origin main 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) { Write-Log "pushed $($unpushed.Count) commit(s)"; Set-Synced; exit 0 }
+        git fetch -q origin main 2>&1 | Out-Null
+        git merge-base --is-ancestor origin/main HEAD
+        if ($LASTEXITCODE -ne 0) { Write-Log "push rejected (another machine pushed first), retrying: $($out.Trim())"; continue }
+        if (-not (Invoke-GitWithRetry 'push' @('push', '-q', 'origin', 'main'))) { exit 1 }
+        Write-Log "pushed $($unpushed.Count) commit(s)"
+        Set-Synced
         exit 0
     }
-
-    if (-not (Invoke-GitWithRetry 'push' @('push', '-q', 'origin', 'main'))) { exit 1 }
-    Write-Log "pushed $($unpushed.Count) commit(s)"
-    Set-Synced
+    Write-Log 'gave up after 3 push races'
+    exit 1
 } catch {
     Write-Log "error: $($_.Exception.Message)"
     exit 1
