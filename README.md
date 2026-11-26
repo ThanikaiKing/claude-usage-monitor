@@ -75,11 +75,14 @@ Assistant records are deduplicated by `message.id`, since Claude Code writes one
 
 **History is cumulative.** Claude Code prunes old transcripts. Ingest merges into the existing snapshot: sessions found on disk replace their stored copy, and pruned sessions are kept. To keep more raw history, raise `cleanupPeriodDays` in `~/.claude/settings.json`.
 
+**Tracking starts on 1 November 2026** (`TRACK_FROM` in `scripts/ingest.ts`). Nothing earlier is ingested: transcript events, prompt history and stats-cache days before that date are skipped, and stored sessions that ended before it are dropped. The stats cache's model and hour totals can't be split by date, so they're cleared whenever any of its days fall before the start.
+
 ## Options
 
 ```bash
 npm run ingest -- --claude-dir /path/to/.claude   # read another location
 npm run ingest -- --redact                        # alias projects ("Project A"), drop titles and branches
+npm run ingest -- --since 2026-12-01              # one-off start date instead of TRACK_FROM
 ```
 
 ## Cost model

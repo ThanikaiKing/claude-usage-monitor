@@ -4,6 +4,7 @@
  *   npm run ingest                       # default ~/.claude
  *   npm run ingest -- --claude-dir PATH  # another location
  *   npm run ingest -- --redact           # alias project names, drop session titles
+ *   npm run ingest -- --since 2026-11-01 # tracking start date (default TRACK_FROM)
  *
  * The merge is cumulative: sessions found in the transcripts replace their stored copy, and
  * sessions that Claude Code has since pruned are kept, so history outlives transcript cleanup.
@@ -11,6 +12,9 @@
  *
  * stats-cache.json and history.jsonl are per machine, so their aggregates are stored per machine
  * (keyed by a hash of the hostname) and summed. Each run only replaces its own machine's entry.
+ *
+ * Nothing before the tracking start date (local midnight) is kept: earlier transcript events,
+ * prompt history and stats-cache days are skipped, and stored sessions that ended earlier are dropped.
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -40,6 +44,13 @@ const argValue = (flag: string) => {
 };
 const CLAUDE_DIR = argValue("--claude-dir") ?? path.join(os.homedir(), ".claude");
 const REDACT = args.includes("--redact");
+/** Monitoring starts here; everything earlier is left out of the snapshot. */
+const TRACK_FROM = "2026-11-01";
+const SINCE = argValue("--since") ?? TRACK_FROM;
+if (!/^\d{4}-\d{2}-\d{2}$/.test(SINCE)) throw new Error(`--since must be YYYY-MM-DD, got "${SINCE}"`);
+const [sy, sm, sd] = SINCE.split("-").map(Number);
+/** Local midnight at the start of SINCE. */
+const SINCE_MS = new Date(sy, sm - 1, sd).getTime();
 const OUT = path.resolve(__dirname, "..", "data", "usage.json");
 /** A pause between events counts toward hands-on time up to this long. */
 const GAP_CAP_MS = 45 * 60 * 1000;
@@ -194,6 +205,7 @@ async function ingestTranscript(file: string) {
 
     const ts = typeof rec.timestamp === "string" ? Date.parse(rec.timestamp) : NaN;
     if (type !== "assistant" && type !== "user") continue;
+    if (ts < SINCE_MS) continue;
     if (!Number.isNaN(ts)) d.events.push(ts);
     if (!isSubFile && typeof rec.cwd === "string" && !d.cwd) d.cwd = rec.cwd;
     if (!isSubFile && typeof rec.entrypoint === "string") d.entrypoint = rec.entrypoint;
@@ -345,7 +357,7 @@ function readLegacy(): LegacyStats {
       cw: m.cacheCreationInputTokens ?? 0,
     };
   }
-  return {
+  return trimLegacy({
     from: days[0]?.date ?? null,
     to: days[days.length - 1]?.date ?? null,
     days,
@@ -353,7 +365,33 @@ function readLegacy(): LegacyStats {
     hourCounts: s.hourCounts ?? {},
     totalSessions: s.totalSessions ?? 0,
     totalMessages: s.totalMessages ?? 0,
+  });
+}
+
+/**
+ * Drops stats-cache days before SINCE. The cache's model, hour and all-time totals can't be split
+ * by date, so when any day was dropped, sessions and messages are re-summed from the remaining
+ * days and the model and hour totals are cleared.
+ */
+function trimLegacy(l: LegacyStats): LegacyStats {
+  const days = l.days.filter((d) => d.date >= SINCE);
+  if (days.length === l.days.length) return l;
+  return {
+    from: days[0]?.date ?? null,
+    to: days[days.length - 1]?.date ?? null,
+    days,
+    modelTotals: {},
+    hourCounts: {},
+    totalSessions: days.reduce((n, d) => n + d.sessions, 0),
+    totalMessages: days.reduce((n, d) => n + d.messages, 0),
   };
+}
+
+/** Drops prompt days before SINCE. weekHour has no dates, so it is only rebuilt by readPrompts. */
+function trimPrompts(p: PromptStats): PromptStats {
+  const byDay = Object.fromEntries(Object.entries(p.byDay).filter(([day]) => day >= SINCE));
+  const days = Object.keys(byDay).sort();
+  return { ...p, from: days[0] ?? null, to: days[days.length - 1] ?? null, byDay };
 }
 
 async function readPrompts(): Promise<PromptStats> {
@@ -362,7 +400,7 @@ async function readPrompts(): Promise<PromptStats> {
   const file = path.join(CLAUDE_DIR, "history.jsonl");
   if (!fs.existsSync(file)) return { from: null, to: null, byDay, weekHour };
   for await (const rec of readJsonl(file)) {
-    if (typeof rec.timestamp !== "number") continue;
+    if (typeof rec.timestamp !== "number" || rec.timestamp < SINCE_MS) continue;
     const d = new Date(rec.timestamp);
     const day = localDay(d);
     const project = projectName(typeof rec.project === "string" ? rec.project : "");
@@ -435,7 +473,7 @@ function otherMachines(previous: Partial<Snapshot> | null): Record<string, Machi
   const out: Record<string, MachineStats> = {};
   for (const [id, m] of Object.entries(machines ?? {})) {
     if (id === MACHINE_ID || (m.imported && m.platform === process.platform)) continue;
-    out[id] = m;
+    out[id] = { ...m, legacy: trimLegacy(m.legacy), prompts: trimPrompts(m.prompts) };
   }
   return out;
 }
@@ -483,7 +521,7 @@ async function main() {
       console.warn("Existing snapshot unreadable; starting fresh.");
     }
   }
-  const previous = prevSnapshot?.sessions ?? [];
+  const previous = (prevSnapshot?.sessions ?? []).filter((s) => s.end >= SINCE_MS);
   const merged = new Map(previous.map((s) => [s.id, s]));
   for (const s of fresh) merged.set(s.id, s);
   const sessions = [...merged.values()].sort((a, b) => a.start - b.start);
@@ -515,7 +553,7 @@ async function main() {
   const kept = sessions.length - fresh.length;
   console.log(
     `Wrote ${path.relative(process.cwd(), OUT)}: ${sessions.length} sessions (${fresh.length} from transcripts, ${kept} retained), ` +
-      `${calls} API responses, ${Object.keys(machines).length} machine(s), ${(fs.statSync(OUT).size / 1024).toFixed(0)} KB${REDACT ? ", redacted" : ""}.`,
+      `${calls} API responses, ${Object.keys(machines).length} machine(s), ${(fs.statSync(OUT).size / 1024).toFixed(0)} KB, since ${SINCE}${REDACT ? ", redacted" : ""}.`,
   );
 }
 
